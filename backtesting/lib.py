@@ -573,10 +573,13 @@ class MultiBacktest:
     in parallel.  Used for comparing strategy runs across many instruments
     or classes of instruments. Example:
 
+        import pandas as pd
+
+        from backtesting.lib import MultiBacktest
         from backtesting.test import EURUSD, BTCUSD, SmaCross
         btm = MultiBacktest([EURUSD, BTCUSD], SmaCross)
         stats_per_ticker: pd.DataFrame = btm.run(fast=10, slow=20)
-        heatmap_per_ticker: pd.DataFrame = btm.optimize(...)
+        heatmap_per_ticker: pd.DataFrame = btm.optimize(fast=[5, 10], slow=[20, 30])
     """
     def __init__(self, df_list, strategy_cls, **kwargs):
         self._dfs = df_list
