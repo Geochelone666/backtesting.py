@@ -623,8 +623,8 @@ class MultiBacktest:
         Wraps `backtesting.backtesting.Backtest.optimize`, but returns `pd.DataFrame` with
         currency indexes in columns.
 
-            heamap: pd.DataFrame = btm.optimize(...)
-            from backtesting.plot import plot_heatmaps
+            heatmap: pd.DataFrame = btm.optimize(...)
+            from backtesting.lib import plot_heatmaps
             plot_heatmaps(heatmap.mean(axis=1))
         """
         heatmaps = []
