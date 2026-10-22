@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import unittest
+import warnings
 from concurrent.futures.process import ProcessPoolExecutor
 from contextlib import contextmanager
 from functools import partial
@@ -954,6 +955,13 @@ class TestLib(TestCase):
     def test_quantile(self):
         self.assertEqual(quantile(np.r_[1, 3, 2], .5), 2)
         self.assertEqual(quantile(np.r_[1, 3, 2]), .5)
+        for values in ([1, 3, 2], (1, 3, 2), pd.Series([1, 3, 2], index=[10, 20, 30])):
+            with self.subTest(values=type(values).__name__):
+                self.assertEqual(quantile(values), .5)
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', RuntimeWarning)
+            for values in ([], [1], np.array([1])):
+                self.assertTrue(np.isnan(quantile(values)))
 
     def test_resample_apply(self):
         res = resample_apply('D', SMA, EURUSD.Close, 10)
