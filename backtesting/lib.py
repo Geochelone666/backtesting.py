@@ -70,14 +70,23 @@ _EQUITY_AGG = {
 }
 
 
-def barssince(condition: Sequence[bool], default=np.inf) -> int:
+def barssince(condition: Union[Sequence[bool], bool, np.bool_, Number], default=np.inf) -> int:
     """
     Return the number of bars since `condition` sequence was last `True`,
     or if never, return `default`.
 
-        >>> barssince(self.data.Close > self.data.Open)
+    Any scalar (0-d) condition — a `bool`, `np.bool_`, number, or 0-d array,
+    such as the result of `cross` — returns 0 if truthy, otherwise `default`.
+    A scalar carries no history, so its answer is only ever 0 or `default`;
+    pass a sequence to measure the number of bars since an earlier event.
+
+        >>> barssince(self.data.Close > self.data.Open)  # sequence
         3
+        >>> barssince(cross(self.data.Close, self.sma))  # scalar
+        0
     """
+    if np.ndim(condition) == 0:
+        return 0 if condition else default
     return next(compress(range(len(condition)), reversed(condition)), default)
 
 
@@ -162,11 +171,10 @@ def quantile(series: Sequence, quantile: Union[None, float] = None):
         0.13
     """
     if quantile is None:
-        try:
-            last, series = series[-1], series[:-1]
-            return np.mean(series < last)
-        except IndexError:
+        values = np.asarray(series)
+        if len(values) < 2:
             return np.nan
+        return np.mean(values[:-1] < values[-1])
     assert 0 <= quantile <= 1, "quantile must be within [0, 1]"
     return np.nanpercentile(series, quantile * 100)
 
@@ -573,10 +581,13 @@ class MultiBacktest:
     in parallel.  Used for comparing strategy runs across many instruments
     or classes of instruments. Example:
 
+        import pandas as pd
+
+        from backtesting.lib import MultiBacktest
         from backtesting.test import EURUSD, BTCUSD, SmaCross
         btm = MultiBacktest([EURUSD, BTCUSD], SmaCross)
         stats_per_ticker: pd.DataFrame = btm.run(fast=10, slow=20)
-        heatmap_per_ticker: pd.DataFrame = btm.optimize(...)
+        heatmap_per_ticker: pd.DataFrame = btm.optimize(fast=[5, 10], slow=[20, 30])
     """
     def __init__(self, df_list, strategy_cls, **kwargs):
         self._dfs = df_list
@@ -620,8 +631,8 @@ class MultiBacktest:
         Wraps `backtesting.backtesting.Backtest.optimize`, but returns `pd.DataFrame` with
         currency indexes in columns.
 
-            heamap: pd.DataFrame = btm.optimize(...)
-            from backtesting.plot import plot_heatmaps
+            heatmap: pd.DataFrame = btm.optimize(...)
+            from backtesting.lib import plot_heatmaps
             plot_heatmaps(heatmap.mean(axis=1))
         """
         heatmaps = []
