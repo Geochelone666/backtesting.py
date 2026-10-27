@@ -33,7 +33,7 @@ from backtesting.lib import (
     random_ohlc_data,
     resample_apply,
 )
-from backtesting.test import BTCUSD, EURUSD, GOOG, SMA
+from backtesting.test import BTCUSD, EURUSD, GOOG, SMA, SmaCross
 
 SHORT_DATA = GOOG.iloc[:20]  # Short data for fast tests with no indicator lag
 
@@ -57,24 +57,6 @@ def chdir(path):
         yield
     finally:
         os.chdir(cwd)
-
-
-class SmaCross(Strategy):
-    # NOTE: These values are also used on the website!
-    fast = 10
-    slow = 30
-
-    def init(self):
-        self.sma1 = self.I(SMA, self.data.Close, self.fast)
-        self.sma2 = self.I(SMA, self.data.Close, self.slow)
-
-    def next(self):
-        if crossover(self.sma1, self.sma2):
-            self.position.close()
-            self.buy()
-        elif crossover(self.sma2, self.sma1):
-            self.position.close()
-            self.sell()
 
 
 class _S(Strategy):
@@ -678,6 +660,51 @@ class TestOptimize(TestCase):
 
 
 class TestPlot(TestCase):
+    def test_superimpose_daily_with_seconds(self):
+        df = pd.DataFrame(
+            dict(Open=100., High=102., Low=99., Close=101., Volume=10.),
+            index=pd.to_datetime([
+                '2021-01-25 14:30:00', '2021-01-26 14:30:00',
+                '2021-01-27 14:30:00', '2021-01-28 14:30:00',
+                '2021-01-29 21:00:02',
+            ]))
+        self.assertEqual(df.index.resolution, 'second')
+        bt = Backtest(df, SmaCross)
+        bt.run()
+        with _tempfile() as f:
+            bt.plot(superimpose=True, resample=False, filename=f, open_browser=False)
+            self.assertGreater(os.path.getsize(f), 0)
+
+    def test_superimpose_explicit_upsampling(self):
+        bt = Backtest(GOOG.iloc[:100], SmaCross)
+        bt.run()
+        with _tempfile() as f:
+            with self.assertRaisesRegex(ValueError, 'Upsampling not supported'):
+                bt.plot(superimpose='h', resample=False, filename=f, open_browser=False)
+
+    def test_superimpose_uses_data_period(self):
+        from bokeh.models import ColumnDataSource
+
+        class NoTrade(_S):
+            def next(self):
+                pass
+
+        for period, rule in [('D', 'ME'), ('h', 'D'), ('15min', 'h'),
+                             ('s', 'min'), ('ms', 's')]:
+            with self.subTest(period=period), _tempfile() as f:
+                df = GOOG.iloc[:100].copy()
+                index = pd.date_range('2021-01-01 14:30:00', periods=len(df), freq=period)
+                df.index = index[:-1].append(index[-1:] + pd.Timedelta(microseconds=123))
+                bt = Backtest(df, NoTrade)
+                bt.run()
+                fig = bt.plot(superimpose=True, resample=False, filename=f, open_browser=False)
+                sources = [source for source in fig.select({'type': ColumnDataSource})
+                           if '_width' in source.data]
+                self.assertEqual(len(sources), 1)
+                expected = df.resample(rule, label='left').agg(OHLCV_AGG)
+                for column in ('Open', 'High', 'Low', 'Close'):
+                    np.testing.assert_array_equal(sources[0].data[column], expected[column])
+
     def test_plot_before_run(self):
         bt = Backtest(GOOG, SmaCross)
         self.assertRaises(RuntimeError, bt.plot)
@@ -940,6 +967,41 @@ class TestLib(TestCase):
         self.assertEqual(barssince(np.r_[0, 0, 0]), np.inf)
         self.assertEqual(barssince(np.r_[0, 0, 0], 0), 0)
 
+    def test_barssince_scalar(self):
+        for boolean in (bool, np.bool_):
+            with self.subTest(boolean=boolean):
+                self.assertEqual(barssince(boolean(True)), 0)
+                self.assertEqual(barssince(boolean(True), -1), 0)
+                self.assertEqual(barssince(boolean(False)), np.inf)
+                self.assertEqual(barssince(boolean(False), -1), -1)
+        # any scalar (0-d): ints, numpy scalars, 0-d arrays
+        for scalar, expected in ((1, 0), (0, np.inf), (-5, 0),
+                                 (np.int64(1), 0), (np.float64(0.0), np.inf),
+                                 (np.True_, 0), (np.False_, np.inf),
+                                 (np.array(True), 0), (np.array(False), np.inf),
+                                 # side effect of the 0-d branch (PR #1422 review):
+                                 # None/str are 0-d too; None is falsy -> default,
+                                 # non-empty str is truthy -> 0 (used to raise TypeError)
+                                 (None, np.inf), ("", np.inf), ("a", 0)):
+            with self.subTest(scalar=repr(scalar)):
+                self.assertEqual(barssince(scalar), expected)
+                self.assertEqual(barssince(scalar, -1),
+                                 expected if expected == 0 else -1)
+
+    def test_barssince_cross(self):
+        for series in ([0, 2], [2, 0], [0, 0]):
+            with self.subTest(series=series):
+                condition = cross(np.array(series), np.array([1, 1]))
+                expected = 0 if series != [0, 0] else np.inf
+                self.assertEqual(barssince(condition), expected)
+
+    def test_barssince_sequences(self):
+        for sequence in (list, tuple, np.array):
+            for values, expected in (([], -1), ([False], -1), ([True], 0),
+                                     ([True, False, True, False], 1)):
+                with self.subTest(sequence=sequence, values=values):
+                    self.assertEqual(barssince(sequence(values), -1), expected)
+
     def test_cross(self):
         self.assertTrue(cross([0, 1], [1, 0]))
         self.assertTrue(cross([1, 0], [0, 1]))
@@ -1056,6 +1118,16 @@ class TestLib(TestCase):
         trade = trades.iloc[0]
         self.assertAlmostEqual(trade['EntryPrice'], 236.69)
         self.assertAlmostEqual(stats['_strategy']._indicators[0][trade['EntryBar']], 234.14)
+
+    def test_MultiBacktest_example(self):
+        example = inspect.cleandoc(MultiBacktest.__doc__.split('Example:', 1)[1])
+        namespace = {}
+        exec(example, namespace)
+        self.assertEqual(namespace['stats_per_ticker'].columns.tolist(), [0, 1])
+        heatmap = namespace['heatmap_per_ticker']
+        self.assertEqual(heatmap.columns.tolist(), [0, 1])
+        self.assertEqual(heatmap.index.names, ['fast', 'slow'])
+        self.assertEqual(len(heatmap), 4)
 
     def test_MultiBacktest(self):
         import backtesting
